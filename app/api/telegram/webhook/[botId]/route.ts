@@ -1,17 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { decryptText } from "@/lib/crypto";
 import { sql } from "@/lib/db";
-import { sendTelegramMessage } from "@/lib/telegram";
+import { answerFlowCallback, flowMatchesText, Flow, runFlow } from "@/lib/flow-engine";
 
 export const runtime = "nodejs";
 
 type BotRow = {
   token_encrypted: string;
-};
-
-type FlowRow = {
-  id: string;
-  response_text: string;
 };
 
 type TelegramUpdate = {
@@ -23,7 +18,38 @@ type TelegramUpdate = {
       id?: number | string;
     };
   };
+  callback_query?: {
+    id?: string;
+    data?: string;
+    message?: {
+      chat?: {
+        id?: number | string;
+      };
+    };
+  };
 };
+
+type FlowMatchRow = Pick<Flow, "id" | "name" | "trigger_text" | "match_mode" | "position" | "enabled" | "response_text">;
+
+async function findMatchingFlow(botId: string, text: string): Promise<FlowMatchRow | null> {
+  const result = await sql<FlowMatchRow>`
+    SELECT id, name, trigger_text, response_text, match_mode, enabled, position
+    FROM flows
+    WHERE bot_id = ${botId}
+      AND enabled = TRUE
+    ORDER BY position ASC, created_at ASC
+  `;
+
+  return result.rows.find((flow) => flowMatchesText(flow, text)) || null;
+}
+
+async function flowBelongsToBot(botId: string, flowId: string): Promise<boolean> {
+  const result = await sql<{ id: string }>`
+    SELECT id FROM flows WHERE id = ${flowId} AND bot_id = ${botId} AND enabled = TRUE LIMIT 1
+  `;
+
+  return result.rows.length > 0;
+}
 
 export async function POST(
   request: NextRequest,
@@ -46,7 +72,26 @@ export async function POST(
     return NextResponse.json({ ok: false, error: "Bot not found." }, { status: 404 });
   }
 
+  const token = decryptText(bot.token_encrypted);
   const update = (await request.json().catch(() => null)) as TelegramUpdate | null;
+
+  const callback = update?.callback_query;
+  const callbackData = callback?.data || "";
+
+  if (callback?.id && callbackData.startsWith("flow:")) {
+    const flowId = callbackData.slice("flow:".length);
+    const chatId = callback.message?.chat?.id;
+
+    if (chatId === undefined || !(await flowBelongsToBot(params.botId, flowId))) {
+      await answerFlowCallback(token, callback.id).catch(() => undefined);
+      return NextResponse.json({ ok: true, matched: false });
+    }
+
+    await answerFlowCallback(token, callback.id).catch(() => undefined);
+    const sent = await runFlow(token, params.botId, flowId, chatId);
+    return NextResponse.json({ ok: true, matched: true, flow_id: flowId, sent });
+  }
+
   const text = update?.message?.text?.trim();
   const chatId = update?.message?.chat?.id;
 
@@ -54,28 +99,15 @@ export async function POST(
     return NextResponse.json({ ok: true, skipped: true });
   }
 
-  const flowResult = await sql<FlowRow>`
-    SELECT id, response_text
-    FROM flows
-    WHERE bot_id = ${params.botId}
-      AND enabled = TRUE
-      AND (
-        (match_mode = 'equals' AND LOWER(trigger_text) = LOWER(${text}))
-        OR
-        (match_mode = 'contains' AND LOWER(${text}) LIKE '%' || LOWER(trigger_text) || '%')
-      )
-    ORDER BY position ASC, created_at ASC
-    LIMIT 1
-  `;
-
-  const flow = flowResult.rows[0];
+  const flow = await findMatchingFlow(params.botId, text);
 
   if (!flow) {
     return NextResponse.json({ ok: true, matched: false });
   }
 
   try {
-    await sendTelegramMessage(decryptText(bot.token_encrypted), chatId, flow.response_text);
+    const sent = await runFlow(token, params.botId, flow.id, chatId);
+    return NextResponse.json({ ok: true, matched: true, flow_id: flow.id, sent });
   } catch (error) {
     return NextResponse.json(
       {
@@ -85,10 +117,8 @@ export async function POST(
       { status: 500 }
     );
   }
-
-  return NextResponse.json({ ok: true, matched: true, flow_id: flow.id });
 }
 
 export async function GET() {
-  return NextResponse.json({ ok: true, message: "VorVix_bot webhook is alive." });
+  return NextResponse.json({ ok: true, message: "VorVix_bot webhook v2 is alive." });
 }

@@ -10,38 +10,142 @@ type Bot = {
   is_active: boolean;
 };
 
+type MatchMode = "equals" | "contains" | "starts_with" | "command" | "any";
+type StepType = "message" | "photo" | "video" | "delay";
+type ButtonType = "url" | "flow";
+
+type FlowButton = {
+  text: string;
+  type: ButtonType;
+  url?: string;
+  flowId?: string;
+};
+
+type FlowStep = {
+  id: string;
+  type: StepType;
+  text: string;
+  media_url: string;
+  delay_seconds: number;
+  buttons: FlowButton[];
+  position: number;
+};
+
 type Flow = {
   id: string;
+  name: string;
   trigger_text: string;
   response_text: string;
-  match_mode: "equals" | "contains";
+  match_mode: MatchMode;
   enabled: boolean;
   position: number;
+  steps: FlowStep[];
+};
+
+type DraftFlow = Omit<Flow, "id" | "position" | "response_text"> & {
+  id?: string;
 };
 
 type BotResponse = {
   ok: boolean;
   bot?: Bot;
   flows?: Flow[];
+  id?: string;
   error?: string;
 };
+
+const MATCH_LABELS: Record<MatchMode, string> = {
+  equals: "Равно сообщению",
+  contains: "Содержит текст",
+  starts_with: "Начинается с текста",
+  command: "Команда /start",
+  any: "Любое сообщение"
+};
+
+const STEP_LABELS: Record<StepType, string> = {
+  message: "Сообщение",
+  photo: "Фото",
+  video: "Видео",
+  delay: "Задержка"
+};
+
+function makeId(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+
+  return Math.random().toString(36).slice(2);
+}
+
+function emptyStep(type: StepType): FlowStep {
+  return {
+    id: makeId(),
+    type,
+    text: type === "message" ? "Новое сообщение" : "",
+    media_url: "",
+    delay_seconds: type === "delay" ? 3 : 0,
+    buttons: [],
+    position: 0
+  };
+}
+
+function emptyDraft(): DraftFlow {
+  return {
+    name: "Новая цепочка",
+    trigger_text: "привет",
+    match_mode: "equals",
+    enabled: true,
+    steps: [emptyStep("message")]
+  };
+}
+
+function cloneFlow(flow: Flow): DraftFlow {
+  return {
+    id: flow.id,
+    name: flow.name || "Цепочка",
+    trigger_text: flow.trigger_text || "",
+    match_mode: flow.match_mode,
+    enabled: flow.enabled,
+    steps: (flow.steps || []).map((step, index) => ({
+      ...step,
+      id: step.id || makeId(),
+      buttons: Array.isArray(step.buttons) ? step.buttons : [],
+      position: index
+    }))
+  };
+}
+
+function getStepSubtitle(step: FlowStep): string {
+  if (step.type === "delay") return `${step.delay_seconds || 1} сек.`;
+  if (step.type === "photo") return step.media_url ? "Фото + подпись" : "Фото не выбрано";
+  if (step.type === "video") return step.media_url ? "Видео + подпись" : "Видео не выбрано";
+  return step.text || "Пустой текст";
+}
+
+function getTriggerPreview(flow: DraftFlow): string {
+  if (flow.match_mode === "any") return "любой вход";
+  if (flow.match_mode === "command") return flow.trigger_text.startsWith("/") ? flow.trigger_text : `/${flow.trigger_text}`;
+  return flow.trigger_text || "без триггера";
+}
 
 export default function BotClient({ botId }: { botId: string }) {
   const [bot, setBot] = useState<Bot | null>(null);
   const [flows, setFlows] = useState<Flow[]>([]);
-  const [triggerText, setTriggerText] = useState("");
-  const [responseText, setResponseText] = useState("");
-  const [matchMode, setMatchMode] = useState<"equals" | "contains">("equals");
+  const [draft, setDraft] = useState<DraftFlow>(emptyDraft);
+  const [selectedFlowId, setSelectedFlowId] = useState<string>("new");
+  const [selectedStepIndex, setSelectedStepIndex] = useState(0);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
+
+  const selectedStep = draft.steps[selectedStepIndex];
 
   const webhookUrl = useMemo(() => {
     if (typeof window === "undefined") return "";
     return `${window.location.origin}/api/telegram/webhook/${botId}`;
   }, [botId]);
 
-  async function loadBot() {
+  async function loadBot(preferredFlowId = selectedFlowId) {
     setLoading(true);
 
     try {
@@ -53,8 +157,27 @@ export default function BotClient({ botId }: { botId: string }) {
         return;
       }
 
+      const nextFlows = data.flows || [];
       setBot(data.bot || null);
-      setFlows(data.flows || []);
+      setFlows(nextFlows);
+
+      const flow = preferredFlowId !== "new"
+        ? nextFlows.find((item) => item.id === preferredFlowId)
+        : null;
+
+      if (flow) {
+        setSelectedFlowId(flow.id);
+        setDraft(cloneFlow(flow));
+        setSelectedStepIndex(0);
+      } else if (preferredFlowId === "new" || nextFlows.length === 0) {
+        setSelectedFlowId("new");
+        setDraft(emptyDraft());
+        setSelectedStepIndex(0);
+      } else {
+        setSelectedFlowId(nextFlows[0].id);
+        setDraft(cloneFlow(nextFlows[0]));
+        setSelectedStepIndex(0);
+      }
     } catch {
       setMessage("Не удалось подключиться к серверу.");
     } finally {
@@ -63,37 +186,121 @@ export default function BotClient({ botId }: { botId: string }) {
   }
 
   useEffect(() => {
-    void loadBot();
+    void loadBot("new");
   }, [botId]);
 
-  async function createFlow(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  function selectFlow(flow: Flow) {
+    setSelectedFlowId(flow.id);
+    setDraft(cloneFlow(flow));
+    setSelectedStepIndex(0);
+    setMessage("");
+  }
+
+  function selectNewFlow() {
+    setSelectedFlowId("new");
+    setDraft(emptyDraft());
+    setSelectedStepIndex(0);
+    setMessage("");
+  }
+
+  function updateDraft(patch: Partial<DraftFlow>) {
+    setDraft((current) => ({ ...current, ...patch }));
+  }
+
+  function updateStep(index: number, patch: Partial<FlowStep>) {
+    setDraft((current) => ({
+      ...current,
+      steps: current.steps.map((step, itemIndex) => (
+        itemIndex === index ? { ...step, ...patch } : step
+      ))
+    }));
+  }
+
+  function addStep(type: StepType) {
+    const next = emptyStep(type);
+    setDraft((current) => ({ ...current, steps: [...current.steps, next] }));
+    setSelectedStepIndex(draft.steps.length);
+  }
+
+  function removeStep(index: number) {
+    setDraft((current) => {
+      if (current.steps.length <= 1) return current;
+      return { ...current, steps: current.steps.filter((_, itemIndex) => itemIndex !== index) };
+    });
+    setSelectedStepIndex((current) => Math.max(0, current - 1));
+  }
+
+  function moveStep(index: number, direction: -1 | 1) {
+    setDraft((current) => {
+      const targetIndex = index + direction;
+      if (targetIndex < 0 || targetIndex >= current.steps.length) return current;
+
+      const steps = [...current.steps];
+      const [item] = steps.splice(index, 1);
+      steps.splice(targetIndex, 0, item);
+      return { ...current, steps };
+    });
+    setSelectedStepIndex(index + direction);
+  }
+
+  function addButton() {
+    if (!selectedStep) return;
+    updateStep(selectedStepIndex, {
+      buttons: [
+        ...(selectedStep.buttons || []),
+        { text: "Кнопка", type: "url", url: "https://t.me/" }
+      ]
+    });
+  }
+
+  function updateButton(buttonIndex: number, patch: Partial<FlowButton>) {
+    if (!selectedStep) return;
+    updateStep(selectedStepIndex, {
+      buttons: selectedStep.buttons.map((button, index) => (
+        index === buttonIndex ? { ...button, ...patch } : button
+      ))
+    });
+  }
+
+  function removeButton(buttonIndex: number) {
+    if (!selectedStep) return;
+    updateStep(selectedStepIndex, {
+      buttons: selectedStep.buttons.filter((_, index) => index !== buttonIndex)
+    });
+  }
+
+  async function saveFlow(event?: FormEvent<HTMLFormElement>) {
+    event?.preventDefault();
     setSaving(true);
     setMessage("");
 
+    const payload = {
+      ...draft,
+      trigger_text: draft.match_mode === "any" ? draft.trigger_text : draft.trigger_text.trim(),
+      steps: draft.steps.map((step, index) => ({ ...step, position: index }))
+    };
+
     try {
-      const response = await fetch(`/api/bots/${botId}/flows`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          trigger_text: triggerText,
-          response_text: responseText,
-          match_mode: matchMode
-        })
-      });
+      const isNew = selectedFlowId === "new";
+      const response = await fetch(
+        isNew ? `/api/bots/${botId}/flows` : `/api/bots/${botId}/flows/${selectedFlowId}`,
+        {
+          method: isNew ? "POST" : "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(payload)
+        }
+      );
 
       const data = (await response.json()) as BotResponse;
 
       if (!response.ok || !data.ok) {
-        setMessage(data.error || "Не удалось создать цепочку.");
+        setMessage(data.error || "Не удалось сохранить цепочку.");
         return;
       }
 
-      setTriggerText("");
-      setResponseText("");
-      setMatchMode("equals");
-      setMessage("Цепочка создана.");
-      await loadBot();
+      const nextId = isNew ? data.id : selectedFlowId;
+      setMessage(isNew ? "Цепочка создана." : "Цепочка сохранена.");
+      await loadBot(nextId || "new");
     } catch {
       setMessage("Не удалось подключиться к серверу.");
     } finally {
@@ -101,11 +308,11 @@ export default function BotClient({ botId }: { botId: string }) {
     }
   }
 
-  async function updateFlow(flow: Flow, patch: Partial<Flow>) {
+  async function updateFlowEnabled(flow: Flow, enabled: boolean) {
     const response = await fetch(`/api/bots/${botId}/flows/${flow.id}`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(patch)
+      body: JSON.stringify({ enabled })
     });
 
     const data = (await response.json()) as BotResponse;
@@ -115,14 +322,15 @@ export default function BotClient({ botId }: { botId: string }) {
       return;
     }
 
-    await loadBot();
+    await loadBot(flow.id);
   }
 
-  async function deleteFlow(flow: Flow) {
-    const response = await fetch(`/api/bots/${botId}/flows/${flow.id}`, {
-      method: "DELETE"
-    });
+  async function deleteFlow(flowId = selectedFlowId) {
+    if (flowId === "new") return;
+    const ok = window.confirm("Удалить эту цепочку?");
+    if (!ok) return;
 
+    const response = await fetch(`/api/bots/${botId}/flows/${flowId}`, { method: "DELETE" });
     const data = (await response.json()) as BotResponse;
 
     if (!response.ok || !data.ok) {
@@ -130,7 +338,8 @@ export default function BotClient({ botId }: { botId: string }) {
       return;
     }
 
-    await loadBot();
+    setMessage("Цепочка удалена.");
+    await loadBot("new");
   }
 
   async function toggleBotActive() {
@@ -149,7 +358,22 @@ export default function BotClient({ botId }: { botId: string }) {
       return;
     }
 
-    await loadBot();
+    await loadBot(selectedFlowId);
+  }
+
+
+  async function refreshWebhook() {
+    setMessage("");
+
+    const response = await fetch(`/api/bots/${botId}/webhook`, { method: "POST" });
+    const data = (await response.json()) as BotResponse;
+
+    if (!response.ok || !data.ok) {
+      setMessage(data.error || "Не удалось обновить webhook.");
+      return;
+    }
+
+    setMessage("Webhook обновлен. Кнопки-переходы теперь будут работать.");
   }
 
   async function deleteBot() {
@@ -185,128 +409,323 @@ export default function BotClient({ botId }: { botId: string }) {
   }
 
   return (
-    <section className="grid">
-      <aside className="panel">
-        <span className={bot.is_active ? "badge" : "badge off"}>
-          {bot.is_active ? "active" : "paused"}
-        </span>
-
-        <h2 style={{ marginTop: 14 }}>{bot.name}</h2>
-
-        <p className="muted">
-          Telegram: @{bot.tg_username || "unknown"}
-          <br />
-          Token: {bot.token_hint}
-        </p>
-
-        <div className="message">
-          Webhook URL:
-          <div className="code-line" style={{ marginTop: 8 }}>{webhookUrl}</div>
-          Секретный параметр webhook хранится на сервере и не показывается в интерфейсе.
+    <section className="builder-shell">
+      <aside className="panel bot-sidebar">
+        <div className="bot-head">
+          <span className={bot.is_active ? "badge" : "badge off"}>
+            {bot.is_active ? "active" : "paused"}
+          </span>
+          <h2>{bot.name}</h2>
+          <p className="muted">
+            @{bot.tg_username || "unknown"}<br />
+            token {bot.token_hint}
+          </p>
         </div>
 
-        <div className="inline-actions" style={{ marginTop: 14 }}>
+        <div className="sidebar-actions">
           <button className="button secondary" onClick={toggleBotActive}>
-            {bot.is_active ? "Поставить на паузу" : "Включить"}
+            {bot.is_active ? "Пауза" : "Включить"}
           </button>
-
+          <button className="button secondary" onClick={refreshWebhook}>
+            Webhook
+          </button>
           <button className="button danger" onClick={deleteBot}>
             Удалить
           </button>
         </div>
 
-        {message ? <div className="message" style={{ marginTop: 14 }}>{message}</div> : null}
+        <div className="message compact">
+          <strong>Webhook</strong>
+          <div className="code-line">{webhookUrl}</div>
+        </div>
+
+        <div className="flow-menu-head">
+          <h3>Цепочки</h3>
+          <button className="mini-button" type="button" onClick={selectNewFlow}>+ новая</button>
+        </div>
+
+        <div className="flow-menu">
+          {flows.length === 0 ? <div className="message compact">Пока нет цепочек.</div> : null}
+          {flows.map((flow) => (
+            <button
+              type="button"
+              className={`flow-menu-item ${selectedFlowId === flow.id ? "active" : ""}`}
+              onClick={() => selectFlow(flow)}
+              key={flow.id}
+            >
+              <span className={flow.enabled ? "dot" : "dot off"} />
+              <span>
+                <strong>{flow.name || "Цепочка"}</strong>
+                <small>{MATCH_LABELS[flow.match_mode]} · {flow.trigger_text || "любой вход"}</small>
+              </span>
+            </button>
+          ))}
+        </div>
       </aside>
 
-      <div className="panel">
-        <h2>Цепочки</h2>
-        <p className="muted">
-          MVP-логика: входящее сообщение сравнивается с триггером, затем бот отправляет ответ.
-        </p>
+      <div className="builder-main">
+        <form className="panel builder-top" onSubmit={saveFlow}>
+          <div className="builder-title-row">
+            <div>
+              <p className="eyebrow">Visual Flow Builder</p>
+              <h2>{selectedFlowId === "new" ? "Новая цепочка" : draft.name}</h2>
+              <p className="muted">Старт → блоки → кнопки → переходы между цепочками.</p>
+            </div>
 
-        <form className="form" onSubmit={createFlow} style={{ marginBottom: 22 }}>
-          <div className="field">
-            <label htmlFor="match-mode">Тип совпадения</label>
-            <select
-              id="match-mode"
-              value={matchMode}
-              onChange={(event) => setMatchMode(event.target.value as "equals" | "contains")}
-            >
-              <option value="equals">Сообщение полностью равно триггеру</option>
-              <option value="contains">Сообщение содержит триггер</option>
-            </select>
+            <div className="inline-actions">
+              {selectedFlowId !== "new" ? (
+                <button className="button danger" type="button" onClick={() => deleteFlow()}>
+                  Удалить
+                </button>
+              ) : null}
+              <button className="button" disabled={saving}>
+                {saving ? "Сохраняю..." : "Сохранить"}
+              </button>
+            </div>
           </div>
 
-          <div className="field">
-            <label htmlFor="trigger">Триггер</label>
-            <input
-              id="trigger"
-              value={triggerText}
-              placeholder="привет"
-              onChange={(event) => setTriggerText(event.target.value)}
-              required
-            />
-          </div>
+          <div className="flow-settings-grid">
+            <div className="field">
+              <label>Название цепочки</label>
+              <input value={draft.name} onChange={(event) => updateDraft({ name: event.target.value })} />
+            </div>
 
-          <div className="field">
-            <label htmlFor="response">Ответ бота</label>
-            <textarea
-              id="response"
-              value={responseText}
-              placeholder="Привет! Чем могу помочь?"
-              onChange={(event) => setResponseText(event.target.value)}
-              required
-            />
-          </div>
+            <div className="field">
+              <label>Тип входа</label>
+              <select
+                value={draft.match_mode}
+                onChange={(event) => updateDraft({ match_mode: event.target.value as MatchMode })}
+              >
+                <option value="equals">Сообщение равно триггеру</option>
+                <option value="contains">Сообщение содержит текст</option>
+                <option value="starts_with">Сообщение начинается с текста</option>
+                <option value="command">Команда Telegram</option>
+                <option value="any">Любое сообщение</option>
+              </select>
+            </div>
 
-          <button className="button" disabled={saving}>
-            {saving ? "Сохраняю..." : "Создать цепочку"}
-          </button>
+            <div className="field">
+              <label>{draft.match_mode === "command" ? "Команда" : "Триггер"}</label>
+              <input
+                value={draft.trigger_text}
+                placeholder={draft.match_mode === "command" ? "/start" : "привет"}
+                disabled={draft.match_mode === "any"}
+                onChange={(event) => updateDraft({ trigger_text: event.target.value })}
+              />
+            </div>
+
+            <label className="switch-line">
+              <input
+                type="checkbox"
+                checked={draft.enabled}
+                onChange={(event) => updateDraft({ enabled: event.target.checked })}
+              />
+              Цепочка включена
+            </label>
+          </div>
         </form>
 
-        {flows.length === 0 ? (
-          <div className="message">Цепочек пока нет. Создай первую выше.</div>
+        {message ? (
+          <div className={message.includes("Не") ? "message error" : "message success"}>{message}</div>
         ) : null}
 
-        <div className="flow-list">
-          {flows.map((flow) => (
-            <article className="flow-card" key={flow.id}>
-              <header>
-                <div>
-                  <span className={flow.enabled ? "badge" : "badge off"}>
-                    {flow.enabled ? "enabled" : "disabled"}
-                  </span>
-                  <h3 style={{ marginTop: 12 }}>
-                    {flow.match_mode === "equals" ? "Равно" : "Содержит"}: {flow.trigger_text}
-                  </h3>
+        <div className="builder-layout">
+          <div className="panel canvas-panel">
+            <div className="canvas-toolbar">
+              <div>
+                <p className="eyebrow">Canvas</p>
+                <h3>Схема цепочки</h3>
+              </div>
+              <div className="block-palette">
+                <button className="mini-button" type="button" onClick={() => addStep("message")}>+ Сообщение</button>
+                <button className="mini-button" type="button" onClick={() => addStep("photo")}>+ Фото</button>
+                <button className="mini-button" type="button" onClick={() => addStep("video")}>+ Видео</button>
+                <button className="mini-button" type="button" onClick={() => addStep("delay")}>+ Задержка</button>
+              </div>
+            </div>
+
+            <div className="flow-canvas">
+              <article className="flow-node start-node">
+                <span className="node-type">Старт</span>
+                <strong>{MATCH_LABELS[draft.match_mode]}</strong>
+                <small>{getTriggerPreview(draft)}</small>
+              </article>
+
+              {draft.steps.map((step, index) => (
+                <div className="node-wrap" key={step.id}>
+                  <div className="node-line" />
+                  <article
+                    className={`flow-node ${selectedStepIndex === index ? "selected" : ""}`}
+                    onClick={() => setSelectedStepIndex(index)}
+                  >
+                    <span className="node-number">#{index + 1}</span>
+                    <span className="node-type">{STEP_LABELS[step.type]}</span>
+                    <strong>{step.type === "delay" ? "Пауза" : STEP_LABELS[step.type]}</strong>
+                    <small>{getStepSubtitle(step)}</small>
+                    {step.buttons.length > 0 ? <em>{step.buttons.length} кноп.</em> : null}
+                  </article>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <aside className="panel inspector">
+            <p className="eyebrow">Inspector</p>
+            <h3>Настройка блока</h3>
+
+            {!selectedStep ? (
+              <div className="message">Выбери блок на схеме.</div>
+            ) : (
+              <div className="form">
+                <div className="field">
+                  <label>Тип блока</label>
+                  <select
+                    value={selectedStep.type}
+                    onChange={(event) => updateStep(selectedStepIndex, { type: event.target.value as StepType })}
+                  >
+                    <option value="message">Сообщение</option>
+                    <option value="photo">Фото</option>
+                    <option value="video">Видео</option>
+                    <option value="delay">Задержка</option>
+                  </select>
                 </div>
 
-                <div className="inline-actions">
+                {selectedStep.type === "delay" ? (
+                  <div className="field">
+                    <label>Сколько ждать, секунд</label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="900"
+                      value={selectedStep.delay_seconds}
+                      onChange={(event) => updateStep(selectedStepIndex, { delay_seconds: Number(event.target.value) })}
+                    />
+                    <p className="muted small-note">На Vercel длинные задержки могут обрываться. Надежный лимит MVP: до 20 секунд.</p>
+                  </div>
+                ) : null}
+
+                {selectedStep.type === "photo" || selectedStep.type === "video" ? (
+                  <div className="field">
+                    <label>{selectedStep.type === "photo" ? "Фото" : "Видео"}: URL или Telegram file_id</label>
+                    <input
+                      value={selectedStep.media_url}
+                      placeholder="https://site.com/file.jpg или file_id"
+                      onChange={(event) => updateStep(selectedStepIndex, { media_url: event.target.value })}
+                    />
+                  </div>
+                ) : null}
+
+                {selectedStep.type !== "delay" ? (
+                  <div className="field">
+                    <label>{selectedStep.type === "message" ? "Текст сообщения" : "Подпись"}</label>
+                    <textarea
+                      value={selectedStep.text}
+                      placeholder="Текст, который отправит бот"
+                      onChange={(event) => updateStep(selectedStepIndex, { text: event.target.value })}
+                    />
+                  </div>
+                ) : null}
+
+                {selectedStep.type !== "delay" ? (
+                  <div className="button-editor">
+                    <div className="button-editor-head">
+                      <strong>Inline-кнопки</strong>
+                      <button className="mini-button" type="button" onClick={addButton}>+ кнопка</button>
+                    </div>
+
+                    {selectedStep.buttons.length === 0 ? (
+                      <div className="message compact">Кнопок нет. Можно добавить URL или переход на другую цепочку.</div>
+                    ) : null}
+
+                    {selectedStep.buttons.map((button, index) => (
+                      <div className="button-row" key={`${button.text}-${index}`}>
+                        <input
+                          value={button.text}
+                          placeholder="Текст кнопки"
+                          onChange={(event) => updateButton(index, { text: event.target.value })}
+                        />
+                        <select
+                          value={button.type}
+                          onChange={(event) => updateButton(index, { type: event.target.value as ButtonType })}
+                        >
+                          <option value="url">Ссылка</option>
+                          <option value="flow">Запустить цепочку</option>
+                        </select>
+                        {button.type === "flow" ? (
+                          <select
+                            value={button.flowId || ""}
+                            onChange={(event) => updateButton(index, { flowId: event.target.value })}
+                          >
+                            <option value="">Выбери цепочку</option>
+                            {flows.map((flow) => (
+                              <option value={flow.id} key={flow.id}>{flow.name}</option>
+                            ))}
+                          </select>
+                        ) : (
+                          <input
+                            value={button.url || ""}
+                            placeholder="https://..."
+                            onChange={(event) => updateButton(index, { url: event.target.value })}
+                          />
+                        )}
+                        <button className="icon-button danger" type="button" onClick={() => removeButton(index)}>×</button>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+
+                <div className="inline-actions inspector-actions">
                   <button
                     className="button secondary"
                     type="button"
-                    onClick={() => updateFlow(flow, { enabled: !flow.enabled })}
+                    disabled={selectedStepIndex === 0}
+                    onClick={() => moveStep(selectedStepIndex, -1)}
                   >
-                    {flow.enabled ? "Выключить" : "Включить"}
+                    Выше
                   </button>
-
+                  <button
+                    className="button secondary"
+                    type="button"
+                    disabled={selectedStepIndex === draft.steps.length - 1}
+                    onClick={() => moveStep(selectedStepIndex, 1)}
+                  >
+                    Ниже
+                  </button>
                   <button
                     className="button danger"
                     type="button"
-                    onClick={() => deleteFlow(flow)}
+                    disabled={draft.steps.length <= 1}
+                    onClick={() => removeStep(selectedStepIndex)}
                   >
-                    Удалить
+                    Удалить блок
                   </button>
                 </div>
-              </header>
-
-              <div className="flow-text">
-                <span className="muted">Ответ:</span>
-                <div className="code-line">{flow.response_text}</div>
               </div>
-            </article>
-          ))}
+            )}
+          </aside>
         </div>
+
+        {flows.length > 0 ? (
+          <div className="panel flow-table-panel">
+            <h3>Все цепочки</h3>
+            <div className="flow-table">
+              {flows.map((flow) => (
+                <div className="flow-table-row" key={flow.id}>
+                  <div>
+                    <strong>{flow.name}</strong>
+                    <small>{MATCH_LABELS[flow.match_mode]} · {flow.trigger_text || "любой вход"} · {flow.steps.length} блок.</small>
+                  </div>
+                  <div className="inline-actions">
+                    <button className="mini-button" type="button" onClick={() => selectFlow(flow)}>Открыть</button>
+                    <button className="mini-button" type="button" onClick={() => updateFlowEnabled(flow, !flow.enabled)}>
+                      {flow.enabled ? "Выключить" : "Включить"}
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
       </div>
     </section>
   );

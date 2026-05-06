@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireSession } from "@/lib/auth";
 import { decryptText } from "@/lib/crypto";
 import { sql } from "@/lib/db";
+import { getFlowsWithSteps } from "@/lib/flow-engine";
 import { deleteTelegramWebhook } from "@/lib/telegram";
 
 export const runtime = "nodejs";
@@ -12,15 +13,6 @@ type BotRow = {
   tg_username: string | null;
   token_hint: string;
   is_active: boolean;
-};
-
-type FlowRow = {
-  id: string;
-  trigger_text: string;
-  response_text: string;
-  match_mode: "equals" | "contains";
-  enabled: boolean;
-  position: number;
 };
 
 export async function GET(
@@ -42,14 +34,8 @@ export async function GET(
     return NextResponse.json({ ok: false, error: "Бот не найден." }, { status: 404 });
   }
 
-  const flowsResult = await sql<FlowRow>`
-    SELECT id, trigger_text, response_text, match_mode, enabled, position
-    FROM flows
-    WHERE bot_id = ${params.id}
-    ORDER BY position ASC, created_at DESC
-  `;
-
-  return NextResponse.json({ ok: true, bot, flows: flowsResult.rows });
+  const flows = await getFlowsWithSteps(params.id);
+  return NextResponse.json({ ok: true, bot, flows });
 }
 
 export async function PATCH(

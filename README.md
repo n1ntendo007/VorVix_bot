@@ -1,88 +1,57 @@
-# VorVix_bot
+# VorVix_bot v2
 
-VorVix_bot is a Next.js + Vercel project for controlling Telegram bots with simple logic chains.
+Панель для Telegram-ботов на Next.js + Vercel + PostgreSQL/Neon.
 
-## What is included
+## Что есть в v2
 
-- Login and registration by username and password.
-- First-user lock: by default only the first account can register.
-- Telegram bot token connection.
-- Automatic Telegram webhook setup when `APP_URL` is configured.
-- Basic chains: if incoming text equals or contains a trigger, send a response.
-- Dark programmer-style interface.
-- Vercel-ready API routes.
+- вход и регистрация по логину/паролю;
+- подключение Telegram-бота по токену;
+- visual flow builder в стиле BotHelp;
+- цепочки с триггерами:
+  - равно сообщению;
+  - содержит текст;
+  - начинается с текста;
+  - Telegram-команда;
+  - любое сообщение;
+- блоки цепочки:
+  - текстовое сообщение;
+  - фото по URL или Telegram file_id;
+  - видео по URL или Telegram file_id;
+  - задержка;
+- inline-кнопки:
+  - кнопка-ссылка;
+  - кнопка-переход на другую цепочку;
+- включение/выключение бота и цепочек;
+- обновление webhook из панели.
 
-## Setup
+## Обновление уже установленного проекта
 
-### 1. Create a database
+1. Замени файлы в GitHub на файлы из этой папки.
+2. В Vercel сделай Redeploy.
+3. Открой setup:
 
-Use Vercel Postgres, Neon, Supabase Postgres, or another hosted PostgreSQL database.
+```text
+https://ТВОЙ-ДОМЕН.vercel.app/api/setup?secret=ТВОЙ_SETUP_SECRET
+```
 
-### 2. Add environment variables in Vercel
+Должно вернуть:
 
-Open your Vercel project:
+```json
+{"ok":true,"version":"vorvix_bot_v2"}
+```
 
-`Settings -> Environment Variables`
+4. Открой бота в панели и нажми кнопку `Webhook`, чтобы Telegram начал присылать callback_query от inline-кнопок.
 
-Add:
+## Environment Variables
 
 ```env
-POSTGRES_URL="postgres://USER:PASSWORD@HOST:PORT/DATABASE?sslmode=require"
-APP_SECRET="a_long_random_string"
-APP_URL="https://your-domain.vercel.app"
-SETUP_SECRET="a_random_setup_secret"
+POSTGRES_URL="postgresql://...-pooler.../neondb?sslmode=require"
+APP_SECRET="длинная_секретная_строка"
+APP_URL="https://твой-домен.vercel.app"
+SETUP_SECRET="секрет_для_setup"
 ALLOW_PUBLIC_REGISTRATION="false"
 ```
 
-Do not use `NEXT_PUBLIC_` for bot tokens or secrets.
+## Важно про задержки
 
-### 3. Deploy
-
-Push this project to GitHub and connect it to Vercel.
-
-### 4. Create tables
-
-After deploy, open:
-
-```text
-https://your-domain.vercel.app/api/setup?secret=YOUR_SETUP_SECRET
-```
-
-You should see:
-
-```json
-{"ok":true}
-```
-
-### 5. Register your admin account
-
-Open the site, register the first account, then log in.
-
-### 6. Add a Telegram bot
-
-Create a bot in Telegram through BotFather, copy its token, then paste it in the dashboard.
-
-If `APP_URL` is correct, the webhook will be set automatically.
-
-## Local development
-
-```bash
-cp .env.example .env.local
-npm install
-npm run dev
-```
-
-Then open:
-
-```text
-http://localhost:3000
-```
-
-For local Telegram webhooks, use a public tunnel such as ngrok and set `APP_URL` to the tunnel URL.
-
-## Important notes
-
-- This MVP stores bot tokens encrypted with `APP_SECRET`.
-- It is built for personal/small usage.
-- Vercel file storage is not used for app data; all persistent data is in PostgreSQL.
-- If you delete a bot in VorVix_bot, its Telegram webhook is also removed when possible.
+Задержки работают прямо внутри webhook. Для Vercel надежный MVP-лимит — до 20 секунд. Для длинных автоворонок на минуты/часы нужна очередь задач или отдельный воркер.
