@@ -7,9 +7,11 @@ export type TelegramBotInfo = {
 
 export type InlineButton = {
   text: string;
-  type: "url" | "flow";
+  type: "url" | "flow" | "reply";
   url?: string;
   flowId?: string;
+  payload?: string;
+  row?: number;
 };
 
 type TelegramApiResponse<T> = {
@@ -46,23 +48,47 @@ async function callTelegram<T>(
   return data;
 }
 
-export function buildReplyMarkup(buttons: InlineButton[] | null | undefined): ReplyMarkup | undefined {
-  const rows = (buttons || [])
-    .map((button) => {
-      const text = String(button.text || "").trim();
-      if (!text) return null;
+export function buildReplyMarkup(
+  buttons: InlineButton[] | null | undefined,
+  stepId?: string
+): ReplyMarkup | undefined {
+  const rowsMap = new Map<number, Array<Record<string, string>>>();
 
-      if (button.type === "url") {
-        const url = String(button.url || "").trim();
-        if (!/^https?:\/\//i.test(url)) return null;
-        return [{ text, url }];
-      }
+  (buttons || []).forEach((button, index) => {
+    const text = String(button.text || "").trim();
+    if (!text) return;
 
+    let telegramButton: Record<string, string> | null = null;
+
+    if (button.type === "url") {
+      const url = String(button.url || "").trim();
+      if (!/^https?:\/\//i.test(url)) return;
+      telegramButton = { text, url };
+    }
+
+    if (button.type === "flow") {
       const flowId = String(button.flowId || "").trim();
-      if (!flowId) return null;
-      return [{ text, callback_data: `flow:${flowId}` }];
-    })
-    .filter(Boolean) as Array<Array<Record<string, string>>>;
+      if (!flowId) return;
+      telegramButton = { text, callback_data: `flow:${flowId}` };
+    }
+
+    if (button.type === "reply") {
+      if (!stepId) return;
+      telegramButton = { text, callback_data: `reply:${stepId}:${index}` };
+    }
+
+    if (!telegramButton) return;
+
+    const rowNumber = Number.isFinite(Number(button.row)) ? Number(button.row) : index;
+    const row = rowsMap.get(rowNumber) || [];
+    row.push(telegramButton);
+    rowsMap.set(rowNumber, row);
+  });
+
+  const rows = Array.from(rowsMap.entries())
+    .sort(([a], [b]) => a - b)
+    .map(([, row]) => row)
+    .filter((row) => row.length > 0);
 
   return rows.length > 0 ? { inline_keyboard: rows } : undefined;
 }
@@ -119,14 +145,15 @@ export async function sendTelegramMessage(
   token: string,
   chatId: number | string,
   text: string,
-  buttons?: InlineButton[]
+  buttons?: InlineButton[],
+  stepId?: string
 ): Promise<void> {
   const data = await callTelegram<unknown>(token, "sendMessage", {
     chat_id: chatId,
     text,
     parse_mode: "HTML",
     disable_web_page_preview: false,
-    reply_markup: buildReplyMarkup(buttons)
+    reply_markup: buildReplyMarkup(buttons, stepId)
   });
 
   if (!data.ok) {
@@ -139,14 +166,15 @@ export async function sendTelegramPhoto(
   chatId: number | string,
   photo: string,
   caption?: string,
-  buttons?: InlineButton[]
+  buttons?: InlineButton[],
+  stepId?: string
 ): Promise<void> {
   const data = await callTelegram<unknown>(token, "sendPhoto", {
     chat_id: chatId,
     photo,
     caption: caption || undefined,
     parse_mode: caption ? "HTML" : undefined,
-    reply_markup: buildReplyMarkup(buttons)
+    reply_markup: buildReplyMarkup(buttons, stepId)
   });
 
   if (!data.ok) {
@@ -159,17 +187,102 @@ export async function sendTelegramVideo(
   chatId: number | string,
   video: string,
   caption?: string,
-  buttons?: InlineButton[]
+  buttons?: InlineButton[],
+  stepId?: string
 ): Promise<void> {
   const data = await callTelegram<unknown>(token, "sendVideo", {
     chat_id: chatId,
     video,
     caption: caption || undefined,
     parse_mode: caption ? "HTML" : undefined,
-    reply_markup: buildReplyMarkup(buttons)
+    reply_markup: buildReplyMarkup(buttons, stepId)
   });
 
   if (!data.ok) {
     throw new Error(data.description || "Could not send Telegram video.");
+  }
+}
+
+export async function sendTelegramDocument(
+  token: string,
+  chatId: number | string,
+  document: string,
+  caption?: string,
+  buttons?: InlineButton[],
+  stepId?: string
+): Promise<void> {
+  const data = await callTelegram<unknown>(token, "sendDocument", {
+    chat_id: chatId,
+    document,
+    caption: caption || undefined,
+    parse_mode: caption ? "HTML" : undefined,
+    reply_markup: buildReplyMarkup(buttons, stepId)
+  });
+
+  if (!data.ok) {
+    throw new Error(data.description || "Could not send Telegram document.");
+  }
+}
+
+export async function sendTelegramAudio(
+  token: string,
+  chatId: number | string,
+  audio: string,
+  caption?: string,
+  buttons?: InlineButton[],
+  stepId?: string
+): Promise<void> {
+  const data = await callTelegram<unknown>(token, "sendAudio", {
+    chat_id: chatId,
+    audio,
+    caption: caption || undefined,
+    parse_mode: caption ? "HTML" : undefined,
+    reply_markup: buildReplyMarkup(buttons, stepId)
+  });
+
+  if (!data.ok) {
+    throw new Error(data.description || "Could not send Telegram audio.");
+  }
+}
+
+export async function sendTelegramVoice(
+  token: string,
+  chatId: number | string,
+  voice: string,
+  caption?: string,
+  buttons?: InlineButton[],
+  stepId?: string
+): Promise<void> {
+  const data = await callTelegram<unknown>(token, "sendVoice", {
+    chat_id: chatId,
+    voice,
+    caption: caption || undefined,
+    parse_mode: caption ? "HTML" : undefined,
+    reply_markup: buildReplyMarkup(buttons, stepId)
+  });
+
+  if (!data.ok) {
+    throw new Error(data.description || "Could not send Telegram voice.");
+  }
+}
+
+export async function sendTelegramAnimation(
+  token: string,
+  chatId: number | string,
+  animation: string,
+  caption?: string,
+  buttons?: InlineButton[],
+  stepId?: string
+): Promise<void> {
+  const data = await callTelegram<unknown>(token, "sendAnimation", {
+    chat_id: chatId,
+    animation,
+    caption: caption || undefined,
+    parse_mode: caption ? "HTML" : undefined,
+    reply_markup: buildReplyMarkup(buttons, stepId)
+  });
+
+  if (!data.ok) {
+    throw new Error(data.description || "Could not send Telegram animation.");
   }
 }

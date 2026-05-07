@@ -11,7 +11,7 @@ export default async function BotPage({ params }: { params: { id: string } }) {
   }
 
   return (
-    <main className="page">
+    <main className="page builder-page">
       <Header username={session.username} />
       <BotClient botId={params.id} />
     </main>
